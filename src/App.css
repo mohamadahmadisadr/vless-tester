@@ -402,6 +402,12 @@ body {
   background: var(--green-bg);
 }
 
+.copy-btn.failed {
+  border-color: var(--red-text);
+  color: var(--red-text);
+  background: var(--red-bg);
+}
+
 /* Empty state */
 .empty-state {
   display: flex;
