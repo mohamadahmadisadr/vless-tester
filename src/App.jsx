@@ -12,20 +12,76 @@ function pingColor(ms) {
   return 'slow'
 }
 
-function CopyButton({ text }) {
-  const [copied, setCopied] = useState(false)
+function copyWithTextarea(text) {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.top = '0'
+  textarea.style.left = '-9999px'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1800)
-    })
+  const selection = document.getSelection()
+  const selectedRange = selection?.rangeCount ? selection.getRangeAt(0) : null
+
+  try {
+    textarea.focus()
+    textarea.select()
+    textarea.setSelectionRange(0, textarea.value.length)
+
+    return document.execCommand?.('copy') === true
+  } finally {
+    document.body.removeChild(textarea)
+
+    if (selectedRange && selection) {
+      selection.removeAllRanges()
+      selection.addRange(selectedRange)
+    }
+  }
+}
+
+async function copyText(text) {
+  if (copyWithTextarea(text)) return
+
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+
+  throw new Error('Copy command failed')
+}
+
+function CopyButton({ text }) {
+  const [copyState, setCopyState] = useState('idle')
+  const resetTimerRef = useRef(null)
+
+  const showCopyState = (state) => {
+    clearTimeout(resetTimerRef.current)
+    setCopyState(state)
+    resetTimerRef.current = setTimeout(() => setCopyState('idle'), 1800)
+  }
+
+  const handleCopy = async () => {
+    try {
+      await copyText(text)
+      showCopyState('copied')
+    } catch {
+      showCopyState('failed')
+    }
   }
 
   return (
-    <button className={`copy-btn ${copied ? 'copied' : ''}`} onClick={handleCopy}>
-      {copied ? (
+    <button
+      type="button"
+      className={`copy-btn ${copyState}`}
+      onClick={handleCopy}
+      aria-label={copyState === 'copied' ? 'Copied' : 'Copy config'}
+    >
+      {copyState === 'copied' ? (
         <><CheckIcon /> Copied</>
+      ) : copyState === 'failed' ? (
+        <><AlertIcon /> Failed</>
       ) : (
         <><CopyIcon /> Copy</>
       )}
