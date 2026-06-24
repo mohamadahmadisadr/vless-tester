@@ -1,4 +1,3 @@
-const CORS_PROXY = 'https://corsproxy.io/?url='
 const GITHUB_URL = 'https://raw.githubusercontent.com/barry-far/V2ray-config/main/Splitted-By-Protocol/vless.txt'
 
 export function parseVless(raw) {
@@ -21,7 +20,7 @@ export function parseVless(raw) {
 }
 
 export async function fetchConfigs() {
-  const res = await fetch(CORS_PROXY + encodeURIComponent(GITHUB_URL))
+  const res = await fetch(GITHUB_URL, { cache: 'no-store' })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const text = await res.text()
   return text
