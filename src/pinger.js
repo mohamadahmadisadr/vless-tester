@@ -1,4 +1,15 @@
-const GITHUB_URL = 'https://raw.githubusercontent.com/barry-far/V2ray-config/main/Splitted-By-Protocol/vless.txt'
+const GITHUB_URL =
+  'https://raw.githubusercontent.com/barry-far/V2ray-config/main/Splitted-By-Protocol/vless.txt'
+
+export async function fetchConfigs() {
+  const res = await fetch(GITHUB_URL)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const text = await res.text()
+  return text
+    .split('\n')
+    .map(l => parseVless(l))
+    .filter(Boolean)
+}
 
 export function parseVless(raw) {
   try {
@@ -12,65 +23,55 @@ export function parseVless(raw) {
     const transport = p.get('type') || 'tcp'
     const security = p.get('security') || 'none'
     const path = p.get('path') || '/'
-    const tag = decodeURIComponent(u.hash.replace('#', '')) || `${host}:${port}`
+    const tag =
+      decodeURIComponent(u.hash.replace('#', '')) || `${host}:${port}`
     return { raw: raw.trim(), host, port, sni, hostHeader, path, security, transport, tag }
   } catch {
     return null
   }
 }
 
-export async function fetchConfigs() {
-  const res = await fetch(GITHUB_URL, { cache: 'no-store' })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  const text = await res.text()
-  return text
-    .split('\n')
-    .map(l => parseVless(l))
-    .filter(Boolean)
-}
-
-async function fetchProbe(url, timeoutMs) {
-  const start = performance.now()
-  try {
-    await fetch(url, {
-      method: 'HEAD',
-      mode: 'no-cors',
-      signal: AbortSignal.timeout(timeoutMs),
-      cache: 'no-store',
-    })
-    return Math.round(performance.now() - start)
-  } catch {
-    return null
-  }
-}
-
-function imageProbe(base, timeoutMs) {
+// Only imageProbe is reliable from https:// pages.
+// fetch() with mode:'no-cors' returns an opaque response (status 0)
+// even when the host is dead — giving fake 0ms results.
+// imageProbe requires a real TCP connection for any response at all.
+function imageProbe(host, port, timeoutMs) {
   return new Promise(resolve => {
     const img = new Image()
     const start = performance.now()
-    const t = setTimeout(() => { img.src = ''; resolve(null) }, timeoutMs)
+
+    const timer = setTimeout(() => {
+      img.onload = img.onerror = null
+      img.src = ''
+      resolve(null) // true timeout = unreachable
+    }, timeoutMs)
+
     img.onload = img.onerror = () => {
-      clearTimeout(t)
+      clearTimeout(timer)
+      // Both load and error mean the host responded at TCP level.
+      // "error" just means no valid image — the connection was real.
       resolve(Math.round(performance.now() - start))
     }
-    img.src = `${base}/favicon.ico?_=${Date.now()}`
+
+    // Always https — avoids mixed content block on https pages.
+    // Even http-only servers respond to the TLS attempt fast enough
+    // to confirm reachability.
+    img.src = `https://${host}:${port}/favicon.ico?_=${Date.now()}`
   })
 }
 
 export async function pingConfig(cfg, timeoutMs = 5000) {
-  const transport = cfg.transport.toLowerCase()
-  const useTLS = cfg.security === 'tls' || cfg.security === 'reality'
-  const scheme = useTLS ? 'https' : 'http'
-
-  if (['xhttp', 'http', 'ws', 'h2', 'splithttp'].includes(transport)) {
-    const url = `${scheme}://${cfg.hostHeader}:${cfg.port}${cfg.path}`
-    return fetchProbe(url, timeoutMs)
-  }
-
-  return imageProbe(`${scheme}://${cfg.host}:${cfg.port}`, timeoutMs)
+  return imageProbe(cfg.host, cfg.port, timeoutMs)
 }
 
-export async function pingAll({ configs, concurrency = 30, timeoutMs = 5000, maxWorking = 5, onResult, signal }) {
+export async function pingAll({
+  configs,
+  concurrency = 30,
+  timeoutMs = 5000,
+  maxWorking = 5,
+  onResult,
+  signal,
+}) {
   const queue = [...configs]
   let workingCount = 0
 
