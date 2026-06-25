@@ -12,12 +12,6 @@ function pingColor(ms) {
   return 'slow'
 }
 
-function probeLabel(transport) {
-  if (transport === 'ws' || transport === 'h2') return { label: 'VLESS·WS', tip: 'Real VLESS handshake — accurate' }
-  if (transport === 'reality') return { label: 'TLS probe', tip: 'TLS reachability check' }
-  return { label: 'TCP probe', tip: 'TCP/TLS reachability only' }
-}
-
 function CopyButton({ text }) {
   const [copied, setCopied] = useState(false)
   const handle = () => {
@@ -28,43 +22,21 @@ function CopyButton({ text }) {
   }
   return (
     <button className={`copy-btn ${copied ? 'copied' : ''}`} onClick={handle}>
-      {copied ? <><CheckIcon /> Copied</> : <><CopyIcon /> Copy</>}
+      {copied ? 'Copied' : 'Copy'}
     </button>
   )
 }
 
 function ConfigCard({ result }) {
   const color = pingColor(result.pingMs)
-  const probe = probeLabel(result.transport)
   return (
     <div className="config-card">
       <div className={`ping-badge ping-${color}`}>{result.pingMs} ms</div>
       <div className="config-info">
-        <div className="config-tag">
-          {result.tag}
-          <span className="transport-pill" title={probe.tip}>{result.transport}</span>
-          <span className={`probe-pill probe-${result.transport === 'ws' || result.transport === 'h2' ? 'accurate' : 'approx'}`}
-            title={probe.tip}>
-            {probe.label}
-          </span>
-        </div>
-        <div className="config-host">
-          {result.host}:{result.port}
-          {result.security !== 'none' && (
-            <span className="security-pill">{result.security}</span>
-          )}
-        </div>
+        <div className="config-tag">{result.tag}</div>
+        <div className="config-host">{result.host}:{result.port} · {result.transport}</div>
       </div>
       <CopyButton text={result.raw} />
-    </div>
-  )
-}
-
-function StatCard({ label, value, accent }) {
-  return (
-    <div className="stat-card">
-      <div className="stat-label">{label}</div>
-      <div className={`stat-value ${accent ? `stat-${accent}` : ''}`}>{value}</div>
     </div>
   )
 }
@@ -72,17 +44,15 @@ function StatCard({ label, value, accent }) {
 export default function App() {
   const [status, setStatus] = useState('idle')
   const [results, setResults] = useState([])
-  const [total, setTotal] = useState(0)
-  const [tested, setTested] = useState(0)
+  const [progress, setProgress] = useState(0)
   const [error, setError] = useState(null)
   const abortRef = useRef(null)
   const testedRef = useRef(0)
-
-  const fastest = results.length > 0 ? Math.min(...results.map(r => r.pingMs)) : null
+  const totalRef = useRef(0)
 
   const handleResult = useCallback((result) => {
     testedRef.current += 1
-    setTested(testedRef.current)
+    setProgress(Math.min(100, Math.round(testedRef.current / totalRef.current * 100)))
     if (result.reachable) {
       setResults(prev => [...prev, result].sort((a, b) => a.pingMs - b.pingMs))
     }
@@ -91,9 +61,9 @@ export default function App() {
   const start = async () => {
     setResults([])
     setError(null)
-    setTested(0)
+    setProgress(0)
     testedRef.current = 0
-    setTotal(0)
+    totalRef.current = 0
     setStatus('fetching')
 
     const controller = new AbortController()
@@ -102,7 +72,7 @@ export default function App() {
     try {
       const configs = await fetchConfigs()
       if (controller.signal.aborted) return
-      setTotal(configs.length)
+      totalRef.current = configs.length
       setStatus('testing')
 
       await pingAll({
@@ -114,7 +84,7 @@ export default function App() {
         signal: controller.signal,
       })
 
-      setStatus(controller.signal.aborted ? 'stopped' : 'done')
+      setStatus(controller.signal.aborted ? 'idle' : 'done')
     } catch (e) {
       if (!controller.signal.aborted) {
         setError(e.message)
@@ -125,103 +95,89 @@ export default function App() {
 
   const stop = () => {
     abortRef.current?.abort()
-    setStatus('stopped')
+    setStatus('idle')
   }
 
   const clear = () => {
     abortRef.current?.abort()
     setResults([])
-    setTotal(0)
-    setTested(0)
-    testedRef.current = 0
+    setProgress(0)
     setError(null)
+    testedRef.current = 0
+    totalRef.current = 0
     setStatus('idle')
   }
 
   const isRunning = status === 'fetching' || status === 'testing'
-  const progress = total > 0 ? Math.min(100, Math.round(tested / total * 100)) : 0
+  const hasResults = results.length > 0
 
   return (
     <div className="app">
-      <div className="container">
 
-        <header className="header">
-          <div className="header-icon"><ShieldIcon /></div>
-          <div>
-            <h1>VLESS Config Tester</h1>
-            <p>Tests on your connection · WS configs get a real VLESS handshake · stops at {MAX_WORKING} working</p>
+      {/* Top bar — only visible after first run */}
+      {(hasResults || isRunning || status === 'done') && (
+        <div className="topbar">
+          <span className="topbar-title">VLESS Tester</span>
+          <div className="topbar-actions">
+            {isRunning
+              ? <button className="btn-ghost" onClick={stop}>Stop</button>
+              : <>
+                <button className="btn-ghost" onClick={clear}>Clear</button>
+                <button className="btn-ghost" onClick={start}>Redo</button>
+              </>
+            }
           </div>
-        </header>
-
-        <div className="legend">
-          <span className="probe-pill probe-accurate">VLESS·WS</span> real tunnel handshake &nbsp;·&nbsp;
-          <span className="probe-pill probe-approx">TLS/TCP probe</span> reachability only
         </div>
+      )}
 
-        <div className="actions">
-          <button className="btn btn-primary" onClick={start} disabled={isRunning}>
-            <PlayIcon />{isRunning ? 'Testing…' : 'Start testing'}
-          </button>
-          <button className="btn" onClick={stop} disabled={!isRunning}>
-            <StopIcon />Stop
-          </button>
-          <button className="btn btn-ghost" onClick={clear} disabled={isRunning}>
-            <TrashIcon />Clear
-          </button>
-        </div>
+      <div className={`main ${hasResults || isRunning ? 'main-top' : 'main-center'}`}>
 
-        {error && (
-          <div className="error-banner"><AlertIcon /> {error}</div>
+        {/* Hero — only when idle and no results */}
+        {!hasResults && !isRunning && status !== 'done' && (
+          <div className="hero">
+            <div className="hero-icon">
+              <ShieldIcon />
+            </div>
+            <h1>VLESS Tester</h1>
+            <p>Finds working configs on your connection</p>
+            {error && <div className="error">{error}</div>}
+            <button className="btn-start" onClick={start}>
+              Start testing
+            </button>
+          </div>
         )}
 
-        <div className="stats-grid">
-          <StatCard label="Total configs" value={total > 0 ? total.toLocaleString() : '—'} />
-          <StatCard label="Tested" value={tested.toLocaleString()} />
-          <StatCard label="Working" value={results.length} accent="success" />
-          <StatCard label="Fastest" value={fastest !== null ? `${fastest} ms` : '—'} accent="info" />
-        </div>
-
-        {(isRunning || status === 'done' || status === 'stopped') && (
-          <div className="progress-section">
+        {/* Progress bar */}
+        {isRunning && (
+          <div className="progress-wrap">
             <div className="progress-track">
               <div className="progress-fill" style={{ width: `${progress}%` }} />
             </div>
-            <div className="progress-meta">
-              <span className={`status-dot status-${status}`} />
-              <span className="progress-text">
-                {status === 'fetching' && 'Fetching config list from GitHub…'}
-                {status === 'testing' && `Testing ${tested.toLocaleString()} / ${total.toLocaleString()} configs`}
-                {status === 'done' && `Done — found ${results.length} working out of ${tested.toLocaleString()} tested`}
-                {status === 'stopped' && `Stopped — found ${results.length} working out of ${tested.toLocaleString()} tested`}
-              </span>
-              {isRunning && <span className="progress-pct">{progress}%</span>}
+            <div className="progress-label">
+              {status === 'fetching' ? 'Fetching configs…' : `${progress}%`}
             </div>
           </div>
         )}
 
-        {results.length > 0 && (
-          <section className="results-section">
-            <div className="results-header">
-              <h2>Working configs</h2>
-              <span className="badge-success">{results.length} / {MAX_WORKING}</span>
-            </div>
-            <div className="config-list">
-              {results.map((r, i) => <ConfigCard key={i} result={r} />)}
-            </div>
-          </section>
-        )}
-
-        {status === 'idle' && results.length === 0 && !error && (
-          <div className="empty-state">
-            <WifiIcon />
-            <p>Press <strong>Start testing</strong> to find working configs on your connection</p>
+        {/* Results */}
+        {hasResults && (
+          <div className="results">
+            {results.map((r, i) => <ConfigCard key={i} result={r} />)}
           </div>
         )}
 
-        {(status === 'done' || status === 'stopped') && results.length === 0 && (
-          <div className="empty-state empty-fail">
-            <WifiOffIcon />
-            <p>No working configs found on your connection</p>
+        {/* Done, no results */}
+        {status === 'done' && !hasResults && (
+          <div className="empty">
+            No working configs found
+            <button className="btn-ghost" onClick={start} style={{ marginTop: 16 }}>Try again</button>
+          </div>
+        )}
+
+        {/* Redo button below results when done */}
+        {status === 'done' && hasResults && (
+          <div className="done-row">
+            <span className="done-label">Done · {results.length} found</span>
           </div>
         )}
 
@@ -230,38 +186,12 @@ export default function App() {
   )
 }
 
-// Icons
-const icon = (d) => () => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
-    stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d={d} />
-  </svg>
-)
-
 function ShieldIcon() {
-  return <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
-}
-function PlayIcon() {
-  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5,3 19,12 5,21" /></svg>
-}
-function StopIcon() {
-  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="6" width="12" height="12" /></svg>
-}
-function TrashIcon() {
-  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3,6 5,6 21,6" /><path d="M19,6l-1,14H6L5,6" /><path d="M10,11v6" /><path d="M14,11v6" /><path d="M9,6V4h6v2" /></svg>
-}
-function CopyIcon() {
-  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
-}
-function CheckIcon() {
-  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12" /></svg>
-}
-function AlertIcon() {
-  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
-}
-function WifiIcon() {
-  return <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0" /><path d="M1.42 9a16 16 0 0 1 21.16 0" /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" /><line x1="12" y1="20" x2="12.01" y2="20" /></svg>
-}
-function WifiOffIcon() {
-  return <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55" /><path d="M5 12.55a11 11 0 0 1 5.17-2.39" /><path d="M10.71 5.05A16 16 0 0 1 22.56 9" /><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88" /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" /><line x1="12" y1="20" x2="12.01" y2="20" /></svg>
+  return (
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5"
+      strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </svg>
+  )
 }
