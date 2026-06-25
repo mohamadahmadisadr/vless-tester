@@ -1,15 +1,5 @@
-// ─────────────────────────────────────────────────────────────
-// VLESS Config Tester — pure browser, no backend
-// Strategy per transport:
-//   ws/h2  → real VLESS handshake over WebSocket (accurate)
-//   reality → TLS image probe (good approximation)
-//   all else → image probe (TCP reachability only)
-// ─────────────────────────────────────────────────────────────
-
 const GITHUB_URL =
   'https://raw.githubusercontent.com/barry-far/V2ray-config/main/Splitted-By-Protocol/vless.txt'
-
-// ── Config fetching ──────────────────────────────────────────
 
 export async function fetchConfigs() {
   const res = await fetch(GITHUB_URL)
@@ -26,8 +16,6 @@ export async function fetchConfigs() {
       cfg.security === 'reality'
     )
 }
-
-// ── URI parser ───────────────────────────────────────────────
 
 export function parseVless(raw) {
   try {
@@ -49,18 +37,6 @@ export function parseVless(raw) {
   } catch { return null }
 }
 
-// ── VLESS header builder ─────────────────────────────────────
-// Binary format (version 0):
-//  [1] version = 0x00
-//  [16] UUID bytes
-//  [1] addons length = 0x00
-//  [1] command = 0x01 (TCP)
-//  [2] dest port (big-endian)
-//  [1] addr type: 0x02=IPv4 0x03=domain 0x04=IPv6
-//  [1] domain length (if type=domain)
-//  [n] address bytes
-// ─────────────────────────────────────────────────────────────
-
 function uuidToBytes(uuid) {
   const hex = uuid.replace(/-/g, '')
   const bytes = new Uint8Array(16)
@@ -70,52 +46,33 @@ function uuidToBytes(uuid) {
   return bytes
 }
 
-function buildVlessHeader(uuid, destHost, destPort) {
+function buildVlessHeader(uuid) {
   const uuidBytes = uuidToBytes(uuid)
-  const portNum = parseInt(destPort, 10)
-  const enc = new TextEncoder()
-  const hostBytes = enc.encode(destHost)
-
-  // probe target: www.gstatic.com port 80 (generate_204)
   const probeHost = 'www.gstatic.com'
   const probePort = 80
-  const probeBytes = enc.encode(probeHost)
-
-  // total size: 1+16+1+1+2+1+1+n
-  const size = 1 + 16 + 1 + 1 + 2 + 1 + 1 + probeBytes.length
-  const buf = new Uint8Array(size)
+  const hostBytes = new TextEncoder().encode(probeHost)
+  const buf = new Uint8Array(1 + 16 + 1 + 1 + 2 + 1 + 1 + hostBytes.length)
   let i = 0
-
-  buf[i++] = 0x00                      // version
-  buf.set(uuidBytes, i); i += 16       // UUID
-  buf[i++] = 0x00                      // addons length
-  buf[i++] = 0x01                      // command TCP
-  buf[i++] = (probePort >> 8) & 0xff   // port high
-  buf[i++] = probePort & 0xff   // port low
-  buf[i++] = 0x02                      // addr type: domain
-  buf[i++] = probeBytes.length         // domain length
-  buf.set(probeBytes, i)               // domain bytes
-
+  buf[i++] = 0x00
+  buf.set(uuidBytes, i); i += 16
+  buf[i++] = 0x00
+  buf[i++] = 0x01
+  buf[i++] = (probePort >> 8) & 0xff
+  buf[i++] = probePort & 0xff
+  buf[i++] = 0x02
+  buf[i++] = hostBytes.length
+  buf.set(hostBytes, i)
   return buf
 }
 
-// HTTP request to send through the tunnel after VLESS handshake
-function buildHTTPRequest(host) {
-  const req =
-    `GET /generate_204 HTTP/1.1\r\n` +
-    `Host: ${host}\r\n` +
-    `Connection: close\r\n` +
-    `User-Agent: Mozilla/5.0\r\n\r\n`
-  return new TextEncoder().encode(req)
+function buildHTTPRequest() {
+  return new TextEncoder().encode(
+    'GET /generate_204 HTTP/1.1\r\n' +
+    'Host: www.gstatic.com\r\n' +
+    'Connection: close\r\n' +
+    'User-Agent: Mozilla/5.0\r\n\r\n'
+  )
 }
-
-// ── WebSocket VLESS probe ────────────────────────────────────
-// Opens a real WebSocket to the Xray server, sends a VLESS
-// header requesting a connection to www.gstatic.com:80, then
-// sends an HTTP GET /generate_204.
-// Any response (including a VLESS error frame) proves the
-// server received and processed the VLESS header → alive.
-// ─────────────────────────────────────────────────────────────
 
 function probeVlessWS(cfg, timeoutMs) {
   return new Promise(resolve => {
@@ -125,7 +82,7 @@ function probeVlessWS(cfg, timeoutMs) {
 
     let ws
     let settled = false
-    let t0
+    let t0 = null
 
     const done = (ms) => {
       if (settled) return
@@ -138,46 +95,35 @@ function probeVlessWS(cfg, timeoutMs) {
     const timer = setTimeout(() => done(null), timeoutMs)
 
     try {
-      // Pass SNI via Sec-WebSocket-Protocol header trick used by Xray clients
-      ws = new WebSocket(url, cfg.hostHdr !== cfg.host ? [cfg.hostHdr] : [])
+      ws = new WebSocket(url)
       ws.binaryType = 'arraybuffer'
 
       ws.onopen = () => {
         t0 = performance.now()
-        // Send VLESS header + HTTP payload in one binary frame
-        const vlessHeader = buildVlessHeader(cfg.uuid, 'www.gstatic.com', 80)
-        const httpReq = buildHTTPRequest('www.gstatic.com')
-        const payload = new Uint8Array(vlessHeader.length + httpReq.length)
-        payload.set(vlessHeader, 0)
-        payload.set(httpReq, vlessHeader.length)
-        ws.send(payload)
+        const header = buildVlessHeader(cfg.uuid)
+        const http = buildHTTPRequest()
+        const payload = new Uint8Array(header.length + http.length)
+        payload.set(header, 0)
+        payload.set(http, header.length)
+        try { ws.send(payload.buffer) } catch { done(null) }
       }
 
+      // ✅ Only a real message back counts as working
       ws.onmessage = () => {
-        // Any message back = server processed our VLESS header
-        done(Math.round(performance.now() - t0))
+        if (t0 !== null) done(Math.round(performance.now() - t0))
       }
 
       ws.onerror = () => done(null)
-      ws.onclose = (e) => {
-        // Some servers close immediately after responding — still alive
-        if (!settled && t0) {
-          done(Math.round(performance.now() - t0))
-        } else {
-          done(null)
-        }
+
+      // ❌ Close without message = rejected, never count as success
+      ws.onclose = () => {
+        if (!settled) done(null)
       }
     } catch {
       done(null)
     }
   })
 }
-
-// ── Image probe ──────────────────────────────────────────────
-// Measures TCP+TLS reachability. Both onload and onerror mean
-// the host responded at the network level. Only setTimeout
-// means truly unreachable.
-// ─────────────────────────────────────────────────────────────
 
 function probeImage(host, port, timeoutMs) {
   return new Promise(resolve => {
@@ -196,31 +142,19 @@ function probeImage(host, port, timeoutMs) {
 
     const timer = setTimeout(() => done(null), timeoutMs)
     img.onload = img.onerror = () => done(Math.round(performance.now() - start))
-    // Always https — avoids mixed-content block on https pages
     img.src = `https://${host}:${port}/favicon.ico?_=${Date.now()}`
   })
 }
 
-// ── Main ping dispatcher ─────────────────────────────────────
-
 export async function pingConfig(cfg, timeoutMs = 7000) {
-  // Real VLESS handshake — only works for WS transport
   if (cfg.transport === 'ws' || cfg.transport === 'h2') {
     return probeVlessWS(cfg, timeoutMs)
   }
-
-  // Image probe is only meaningful when TLS is involved —
-  // otherwise any open port looks like success
   if (cfg.security === 'tls' || cfg.security === 'reality') {
     return probeImage(cfg.host, cfg.port, timeoutMs)
   }
-
-  // Everything else (tcp/xhttp/grpc with security=none) cannot be
-  // accurately probed from the browser — skip entirely
   return null
 }
-
-// ── Batch runner ─────────────────────────────────────────────
 
 export async function pingAll({
   configs,
@@ -238,10 +172,8 @@ export async function pingAll({
       if (signal?.aborted || workingCount >= maxWorking) break
       const cfg = queue.shift()
       if (!cfg) break
-
       const ms = await pingConfig(cfg, timeoutMs)
       if (signal?.aborted) break
-
       const result = { ...cfg, pingMs: ms ?? 0, reachable: ms !== null }
       if (ms !== null) workingCount++
       onResult?.(result)
