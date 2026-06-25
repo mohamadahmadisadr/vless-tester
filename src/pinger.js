@@ -117,7 +117,7 @@ function probeVlessWS(cfg, timeoutMs) {
 
     let ws
     let settled = false
-    let t0
+    let t0 = null
 
     const done = (ms) => {
       if (settled) return
@@ -130,39 +130,46 @@ function probeVlessWS(cfg, timeoutMs) {
     const timer = setTimeout(() => done(null), timeoutMs)
 
     try {
-      // Pass SNI via Sec-WebSocket-Protocol header trick used by Xray clients
-      ws = new WebSocket(url, cfg.hostHdr !== cfg.host ? [cfg.hostHdr] : [])
+      ws = new WebSocket(url)
       ws.binaryType = 'arraybuffer'
 
       ws.onopen = () => {
         t0 = performance.now()
-        // Send VLESS header + HTTP payload in one binary frame
-        const vlessHeader = buildVlessHeader(cfg.uuid, 'www.gstatic.com', 80)
-        const httpReq = buildHTTPRequest('www.gstatic.com')
-        const payload = new Uint8Array(vlessHeader.length + httpReq.length)
-        payload.set(vlessHeader, 0)
-        payload.set(httpReq, vlessHeader.length)
-        ws.send(payload)
+        const header = buildVlessHeader(cfg.uuid)
+        const http = buildHTTPRequest()
+        const payload = new Uint8Array(header.length + http.length)
+        payload.set(header, 0)
+        payload.set(http, header.length)
+        try { ws.send(payload.buffer) } catch { done(null) }
       }
 
+      // ✅ ONLY a real message back = working
       ws.onmessage = () => {
-        // Any message back = server processed our VLESS header
-        done(Math.round(performance.now() - t0))
+        if (t0 !== null) done(Math.round(performance.now() - t0))
       }
 
       ws.onerror = () => done(null)
-      ws.onclose = (e) => {
-        // Some servers close immediately after responding — still alive
-        if (!settled && t0) {
-          done(Math.round(performance.now() - t0))
-        } else {
-          done(null)
-        }
+
+      // ❌ close without message = always null, no exceptions
+      ws.onclose = () => {
+        if (!settled) done(null)
       }
     } catch {
       done(null)
     }
   })
+}
+
+export async function pingConfig(cfg, timeoutMs = 7000) {
+  if (cfg.transport === 'ws' || cfg.transport === 'h2') {
+    return probeVlessWS(cfg, timeoutMs)
+  }
+
+  if (window.location.protocol === 'https:') {
+    return null
+  }
+
+  return probeImage(cfg.host, cfg.port, timeoutMs)
 }
 
 // ── Image probe ──────────────────────────────────────────────
