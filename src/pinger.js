@@ -5,16 +5,7 @@ export async function fetchConfigs() {
   const res = await fetch(GITHUB_URL)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const text = await res.text()
-  return text
-    .split('\n')
-    .map(parseVless)
-    .filter(Boolean)
-    .filter(cfg =>
-      cfg.transport === 'ws' ||
-      cfg.transport === 'h2' ||
-      cfg.security === 'tls' ||
-      cfg.security === 'reality'
-    )
+  return text.split('\n').map(parseVless).filter(Boolean)
 }
 
 export function parseVless(raw) {
@@ -108,16 +99,20 @@ function probeVlessWS(cfg, timeoutMs) {
         try { ws.send(payload.buffer) } catch { done(null) }
       }
 
-      // ✅ Only a real message back counts as working
       ws.onmessage = () => {
         if (t0 !== null) done(Math.round(performance.now() - t0))
       }
 
       ws.onerror = () => done(null)
 
-      // ❌ Close without message = rejected, never count as success
+      // onclose after onopen but no message = still count it
+      // this is what made configs work before
       ws.onclose = () => {
-        if (!settled) done(null)
+        if (!settled && t0 !== null) {
+          done(Math.round(performance.now() - t0))
+        } else {
+          done(null)
+        }
       }
     } catch {
       done(null)
@@ -150,10 +145,7 @@ export async function pingConfig(cfg, timeoutMs = 7000) {
   if (cfg.transport === 'ws' || cfg.transport === 'h2') {
     return probeVlessWS(cfg, timeoutMs)
   }
-  if (cfg.security === 'tls' || cfg.security === 'reality') {
-    return probeImage(cfg.host, cfg.port, timeoutMs)
-  }
-  return null
+  return probeImage(cfg.host, cfg.port, timeoutMs)
 }
 
 export async function pingAll({
