@@ -200,14 +200,13 @@ export async function pingConfig(cfg, timeoutMs = 7000) {
     return probeVlessWS(cfg, timeoutMs)
   }
 
-  // tcp with no TLS cannot be meaningfully probed from the browser —
-  // any open port looks like success. Skip it entirely.
-  if (cfg.transport === 'tcp' && cfg.security === 'none') {
+  // Image probe is only accurate on http:// pages.
+  // On https:// any server with TLS responds to the image probe
+  // regardless of whether it's an Xray server — always false positive.
+  if (window.location.protocol === 'https:') {
     return null
   }
 
-  // For reality/xhttp/grpc — image probe requires TLS so at least
-  // confirms the server has a valid TLS stack on that port
   return probeImage(cfg.host, cfg.port, timeoutMs)
 }
 
