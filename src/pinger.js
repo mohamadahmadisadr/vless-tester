@@ -151,7 +151,7 @@ export async function pingAll({
   configs,
   concurrency = 20,
   timeoutMs = 7000,
-  maxWorking = 5,
+  maxWorking = 10,
   onResult,
   signal,
 }) {
