@@ -12,11 +12,19 @@ const GITHUB_URL =
 // ── Config fetching ──────────────────────────────────────────
 
 export async function fetchConfigs() {
-  // raw.githubusercontent.com sends Access-Control-Allow-Origin: *
   const res = await fetch(GITHUB_URL)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const text = await res.text()
-  return text.split('\n').map(parseVless).filter(Boolean)
+  return text
+    .split('\n')
+    .map(parseVless)
+    .filter(Boolean)
+    .filter(cfg =>
+      cfg.transport === 'ws' ||
+      cfg.transport === 'h2' ||
+      cfg.security === 'tls' ||
+      cfg.security === 'reality'
+    )
 }
 
 // ── URI parser ───────────────────────────────────────────────
