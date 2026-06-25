@@ -196,14 +196,18 @@ function probeImage(host, port, timeoutMs) {
 // ── Main ping dispatcher ─────────────────────────────────────
 
 export async function pingConfig(cfg, timeoutMs = 7000) {
-  const t = cfg.transport
-
-  if (t === 'ws' || t === 'h2') {
-    // Real VLESS handshake via WebSocket
+  if (cfg.transport === 'ws' || cfg.transport === 'h2') {
     return probeVlessWS(cfg, timeoutMs)
   }
 
-  // For REALITY, xhttp, grpc, tcp — image probe for TCP/TLS reachability
+  // tcp with no TLS cannot be meaningfully probed from the browser —
+  // any open port looks like success. Skip it entirely.
+  if (cfg.transport === 'tcp' && cfg.security === 'none') {
+    return null
+  }
+
+  // For reality/xhttp/grpc — image probe requires TLS so at least
+  // confirms the server has a valid TLS stack on that port
   return probeImage(cfg.host, cfg.port, timeoutMs)
 }
 
