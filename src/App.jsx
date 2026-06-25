@@ -3,8 +3,8 @@ import { fetchConfigs, pingAll } from './pinger'
 import './App.css'
 
 const MAX_WORKING = 5
-const CONCURRENCY = 30
-const TIMEOUT_MS = 5000
+const CONCURRENCY = 20
+const TIMEOUT_MS = 7000
 
 function pingColor(ms) {
   if (ms <= 300) return 'fast'
@@ -12,96 +12,41 @@ function pingColor(ms) {
   return 'slow'
 }
 
-function copyWithTextarea(text) {
-  const textarea = document.createElement('textarea')
-  textarea.value = text
-  textarea.setAttribute('readonly', '')
-  textarea.style.position = 'fixed'
-  textarea.style.top = '0'
-  textarea.style.left = '-9999px'
-  textarea.style.opacity = '0'
-  document.body.appendChild(textarea)
-
-  const selection = document.getSelection()
-  const selectedRange = selection?.rangeCount ? selection.getRangeAt(0) : null
-
-  try {
-    textarea.focus()
-    textarea.select()
-    textarea.setSelectionRange(0, textarea.value.length)
-
-    return document.execCommand?.('copy') === true
-  } finally {
-    document.body.removeChild(textarea)
-
-    if (selectedRange && selection) {
-      selection.removeAllRanges()
-      selection.addRange(selectedRange)
-    }
-  }
-}
-
-async function copyText(text) {
-  if (copyWithTextarea(text)) return
-
-  if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(text)
-    return
-  }
-
-  throw new Error('Copy command failed')
+function probeLabel(transport) {
+  if (transport === 'ws' || transport === 'h2') return { label: 'VLESS·WS', tip: 'Real VLESS handshake — accurate' }
+  if (transport === 'reality') return { label: 'TLS probe', tip: 'TLS reachability check' }
+  return { label: 'TCP probe', tip: 'TCP/TLS reachability only' }
 }
 
 function CopyButton({ text }) {
-  const [copyState, setCopyState] = useState('idle')
-  const resetTimerRef = useRef(null)
-
-  const showCopyState = (state) => {
-    clearTimeout(resetTimerRef.current)
-    setCopyState(state)
-    resetTimerRef.current = setTimeout(() => setCopyState('idle'), 1800)
+  const [copied, setCopied] = useState(false)
+  const handle = () => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    })
   }
-
-  const handleCopy = async () => {
-    try {
-      await copyText(text)
-      showCopyState('copied')
-    } catch {
-      showCopyState('failed')
-    }
-  }
-
   return (
-    <button
-      type="button"
-      className={`copy-btn ${copyState}`}
-      onClick={handleCopy}
-      aria-label={copyState === 'copied' ? 'Copied' : 'Copy config'}
-    >
-      {copyState === 'copied' ? (
-        <><CheckIcon /> Copied</>
-      ) : copyState === 'failed' ? (
-        <><AlertIcon /> Failed</>
-      ) : (
-        <><CopyIcon /> Copy</>
-      )}
+    <button className={`copy-btn ${copied ? 'copied' : ''}`} onClick={handle}>
+      {copied ? <><CheckIcon /> Copied</> : <><CopyIcon /> Copy</>}
     </button>
   )
 }
 
 function ConfigCard({ result }) {
   const color = pingColor(result.pingMs)
+  const probe = probeLabel(result.transport)
   return (
     <div className="config-card">
-      <div className={`ping-badge ping-${color}`}>
-        {result.pingMs} ms
-      </div>
+      <div className={`ping-badge ping-${color}`}>{result.pingMs} ms</div>
       <div className="config-info">
         <div className="config-tag">
           {result.tag}
-          {result.transport !== 'tcp' && (
-            <span className="transport-pill">{result.transport}</span>
-          )}
+          <span className="transport-pill" title={probe.tip}>{result.transport}</span>
+          <span className={`probe-pill probe-${result.transport === 'ws' || result.transport === 'h2' ? 'accurate' : 'approx'}`}
+            title={probe.tip}>
+            {probe.label}
+          </span>
         </div>
         <div className="config-host">
           {result.host}:{result.port}
@@ -125,10 +70,10 @@ function StatCard({ label, value, accent }) {
 }
 
 export default function App() {
-  const [status, setStatus] = useState('idle') // idle | fetching | testing | done | stopped
+  const [status, setStatus] = useState('idle')
   const [results, setResults] = useState([])
   const [total, setTotal] = useState(0)
-  const [tested, setTestedCount] = useState(0)
+  const [tested, setTested] = useState(0)
   const [error, setError] = useState(null)
   const abortRef = useRef(null)
   const testedRef = useRef(0)
@@ -137,7 +82,7 @@ export default function App() {
 
   const handleResult = useCallback((result) => {
     testedRef.current += 1
-    setTestedCount(testedRef.current)
+    setTested(testedRef.current)
     if (result.reachable) {
       setResults(prev => [...prev, result].sort((a, b) => a.pingMs - b.pingMs))
     }
@@ -146,7 +91,7 @@ export default function App() {
   const start = async () => {
     setResults([])
     setError(null)
-    setTestedCount(0)
+    setTested(0)
     testedRef.current = 0
     setTotal(0)
     setStatus('fetching')
@@ -187,7 +132,7 @@ export default function App() {
     abortRef.current?.abort()
     setResults([])
     setTotal(0)
-    setTestedCount(0)
+    setTested(0)
     testedRef.current = 0
     setError(null)
     setStatus('idle')
@@ -201,34 +146,32 @@ export default function App() {
       <div className="container">
 
         <header className="header">
-          <div className="header-icon">
-            <ShieldIcon />
-          </div>
+          <div className="header-icon"><ShieldIcon /></div>
           <div>
             <h1>VLESS Config Tester</h1>
-            <p>Tests configs on your connection · stops at {MAX_WORKING} working</p>
+            <p>Tests on your connection · WS configs get a real VLESS handshake · stops at {MAX_WORKING} working</p>
           </div>
         </header>
 
+        <div className="legend">
+          <span className="probe-pill probe-accurate">VLESS·WS</span> real tunnel handshake &nbsp;·&nbsp;
+          <span className="probe-pill probe-approx">TLS/TCP probe</span> reachability only
+        </div>
+
         <div className="actions">
           <button className="btn btn-primary" onClick={start} disabled={isRunning}>
-            <PlayIcon />
-            {isRunning ? 'Testing…' : 'Start testing'}
+            <PlayIcon />{isRunning ? 'Testing…' : 'Start testing'}
           </button>
           <button className="btn" onClick={stop} disabled={!isRunning}>
-            <StopIcon />
-            Stop
+            <StopIcon />Stop
           </button>
           <button className="btn btn-ghost" onClick={clear} disabled={isRunning}>
-            <TrashIcon />
-            Clear
+            <TrashIcon />Clear
           </button>
         </div>
 
         {error && (
-          <div className="error-banner">
-            <AlertIcon /> {error}
-          </div>
+          <div className="error-banner"><AlertIcon /> {error}</div>
         )}
 
         <div className="stats-grid">
@@ -263,9 +206,7 @@ export default function App() {
               <span className="badge-success">{results.length} / {MAX_WORKING}</span>
             </div>
             <div className="config-list">
-              {results.map((r, i) => (
-                <ConfigCard key={i} result={r} />
-              ))}
+              {results.map((r, i) => <ConfigCard key={i} result={r} />)}
             </div>
           </section>
         )}
@@ -289,30 +230,38 @@ export default function App() {
   )
 }
 
+// Icons
+const icon = (d) => () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+    stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d={d} />
+  </svg>
+)
+
 function ShieldIcon() {
-  return <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+  return <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
 }
 function PlayIcon() {
-  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5,3 19,12 5,21"/></svg>
+  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5,3 19,12 5,21" /></svg>
 }
 function StopIcon() {
-  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="6" width="12" height="12"/></svg>
+  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="6" width="12" height="12" /></svg>
 }
 function TrashIcon() {
-  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3,6 5,6 21,6"/><path d="M19,6l-1,14H6L5,6"/><path d="M10,11v6"/><path d="M14,11v6"/><path d="M9,6V4h6v2"/></svg>
+  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3,6 5,6 21,6" /><path d="M19,6l-1,14H6L5,6" /><path d="M10,11v6" /><path d="M14,11v6" /><path d="M9,6V4h6v2" /></svg>
 }
 function CopyIcon() {
-  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
 }
 function CheckIcon() {
-  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
+  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12" /></svg>
 }
 function AlertIcon() {
-  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
 }
 function WifiIcon() {
-  return <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+  return <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0" /><path d="M1.42 9a16 16 0 0 1 21.16 0" /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" /><line x1="12" y1="20" x2="12.01" y2="20" /></svg>
 }
 function WifiOffIcon() {
-  return <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a11 11 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.56 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+  return <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55" /><path d="M5 12.55a11 11 0 0 1 5.17-2.39" /><path d="M10.71 5.05A16 16 0 0 1 22.56 9" /><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88" /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" /><line x1="12" y1="20" x2="12.01" y2="20" /></svg>
 }
